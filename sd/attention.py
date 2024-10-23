@@ -83,8 +83,15 @@ class SelfAttention(nn.Module):
 class CrossAttention(nn.Module):
 
     def __init__(self, n_heads: int, d_embed: int, d_cross: int, in_proj_bias=True, out_proj_bias=True):
+        '''
+        Args:
+            n_heads: Number of heads
+            d_embed: Embedding dimension (number of channels a pixel is encoded into)
+            d_cross: Dimension of the context (number of channels a token is encoded into)
+            in_proj_bias: Whether to include bias in the linear transformation
+            out_proj_bias: Whether to include bias in the linear transformation
+        '''
         super().__init__()
-
         self.q_proj = nn.Linear(d_embed, d_embed, bias=in_proj_bias)
         self.k_proj = nn.Linear(d_cross, d_embed, bias=in_proj_bias)
         self.v_proj = nn.Linear(d_cross, d_embed, bias=in_proj_bias)
@@ -104,7 +111,7 @@ class CrossAttention(nn.Module):
 
         interim_shape = (batch_size, -1, self.n_heads, self.d_head)
 
-        # Multiply Q by Wq
+        # Multiply Q by Wq, K by Wk, V by Wv
         q = self.q_proj(x)
         k = self.k_proj(y)
         v = self.v_proj(y)
@@ -113,17 +120,22 @@ class CrossAttention(nn.Module):
         k = k.view(interim_shape).transpose(1, 2)
         v = v.view(interim_shape).transpose(1, 2)
 
+        # (Batch_size, n_heads, Seq_len_Q, d_head) @ (Batch_size, n_heads, d_head, Seq_len_KV) ->
+        # -> (Batch_size, n_heads, Seq_len_Q, Seq_len_KV)
         weight = q @ k.transpose(-1, -2)
         weight /= math.sqrt(self.d_head)
 
         # No causal mask because we relate all pixels to all tokens
         weight = F.softmax(weight, dim=-1)
 
+        # (Batch_size, n_heads, Seq_len_Q, Seq_len_KV) @ (Batch_size, n_heads, Seq_len_KV, d_head) ->
+        # -> (Batch_size, n_heads, Seq_len_Q, d_head)
+        # Compute weighted average of the values
         output = weight @ v
 
-        output = output.transpose(1, 2).contigious()
+        output = output.transpose(1, 2)
 
-        output = output.view(input_shape)
+        output = output.reshape(input_shape)
 
         output = self.out_proj(output)
         
