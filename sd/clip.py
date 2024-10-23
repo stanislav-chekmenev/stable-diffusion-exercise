@@ -44,17 +44,18 @@ class CLIPLayer(nn.Module):
         residue = x
 
         # SELF-ATTENTION
+        # TODO: This layernorm might be in the wrong place, check it!
         x = self.layernorm_1(x)
 
         x = self.attention(x, causal_mask=True)
 
         x += residue
 
-        x = self.layernorm_2(x)
-
         # FEEDFORWARD
 
         residue = x
+
+        x = self.layernorm_2(x)
 
         x = self.linear_1(x)
 
