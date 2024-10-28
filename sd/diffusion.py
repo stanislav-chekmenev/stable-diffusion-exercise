@@ -15,10 +15,10 @@ class TimeEmbedding(nn.Module):
         self.linear_2 = nn.Linear(4 * d_embed, 4 * d_embed)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        '''
+        """
         Args:
             x: (Batch_size, 320)
-        '''
+        """
         x = self.linear_1(x)
         x = F.silu(x)
         x = self.linear_2(x)
@@ -44,11 +44,11 @@ class UNet_ResidualBlock(nn.Module):
             self.residual_layer = nn.Conv2d(in_channels, out_channels, kernel_size=1, padding=0)
 
     def forward(self, feature: torch.Tensor, time: torch.Tensor):
-        '''
+        """
         Args:
             feature: (Batch_size, Channels, Height, Width)
             time: (1, 1280)
-        '''
+        """
         residue = feature
 
         feature = self.groupnorm_feature(feature)
@@ -70,11 +70,11 @@ class UNet_ResidualBlock(nn.Module):
         merged = self.conv_merged(merged)
 
         return merged + self.residual_layer(residue)
-    
+
 
 class UNet_AttentionBlock(nn.Module):
 
-    def __init__(self, n_head: int, d_embed: int, d_context: int=768):
+    def __init__(self, n_head: int, d_embed: int, d_context: int = 768):
         super().__init__()
         channels = n_head * d_embed
 
@@ -83,24 +83,24 @@ class UNet_AttentionBlock(nn.Module):
 
         self.layernorm_1 = nn.LayerNorm(channels)
         self.attention_1 = SelfAttention(n_head, channels, in_proj_bias=False)
-        
+
         self.layernorm_2 = nn.LayerNorm(channels)
         self.attention_2 = CrossAttention(n_head, channels, d_context, in_proj_bias=False)
 
         self.layernorm_3 = nn.LayerNorm(channels)
-        self.linear_gelu_1 = nn.Linear(channels, 4 * channels * 2)
-        self.linear_gelu_2 = nn.Linear(4 * channels, channels)
+        self.linear_geglu_1 = nn.Linear(channels, 4 * channels * 2)
+        self.linear_geglu_2 = nn.Linear(4 * channels, channels)
 
         self.conv_output = nn.Conv2d(channels, channels, kernel_size=1, padding=0)
 
     def forward(self, x: torch.Tensor, context: torch.Tensor):
-        '''
+        """
         Args:
             x: (Batch_size, Channels, Height, Width)
             context: (Batch_size, Seq_length, Dim=768)
-        '''
+        """
 
-        residue_long = x 
+        residue_long = x
 
         x = self.groupnorm(x)
 
@@ -131,13 +131,13 @@ class UNet_AttentionBlock(nn.Module):
 
         # Normalization + Feedforward with gated GeLU and skip connection
         x = self.layernorm_3(x)
-        x, gate = self.linear_gelu_1(x).chunk(2, dim=-1)
+        x, gate = self.linear_geglu_1(x).chunk(2, dim=-1)
         x = x * F.gelu(gate)
-        x = self.linear_gelu_2(x)
+        x = self.linear_geglu_2(x)
         x += residue_short
 
         # (Batch_size, Height * Width, Channels) -> (Batch_size, Channels, Height * Width)
-        x = x.transpose(-1, -2).contiguous()
+        x = x.transpose(-1, -2)
 
         x = x.view((n, c, h, w))
 
@@ -152,12 +152,12 @@ class UpSample(nn.Module):
         self.conv = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
 
     def forward(self, x: torch.Tensor):
-        '''
+        """
         Args:
             x: (Batch_size, Channels, Height, Width)
-        '''
+        """
         # (Batch_size, Channels, Height, Width) -> (Batch_size, Channels, Height * 2, Width * 2)
-        x = F.interpolate(x, scale_factor=2, mode='nearest')
+        x = F.interpolate(x, scale_factor=2, mode="nearest")
         return self.conv(x)
 
 
@@ -172,94 +172,102 @@ class SwitchSequential(nn.Sequential):
             else:
                 x = layer(x)
 
-        return x        
+        return x
 
 
 class UNet(nn.Module):
 
     def __init__(self):
         super().__init__()
-        
-        self.encoder = nn.ModuleList([
-            # (Batch_size, 4, Height / 8, Width / 8) -> (Batch_size, 320, Height / 8, Width / 8)
-            # Increase the number of channels
-            SwitchSequential(nn.Conv2d(4, 320, kernel_size=3, padding=1)),
-            
-            SwitchSequential(UNet_ResidualBlock(320, 320), UNet_AttentionBlock(8, 40)),
 
-            SwitchSequential(UNet_ResidualBlock(320, 320), UNet_AttentionBlock(8, 40)),
-
-            # (Batch_size, 320, Height / 8, Width / 8) -> (Batch_size, 320, Height / 16, Width / 16)
-            # Reduce the spatial dimensions
-            SwitchSequential(nn.Conv2d(320, 320, kernel_size=3, stride=2, padding=1)),
-
-            # Increase the number of channels
-            SwitchSequential(UNet_ResidualBlock(320, 640), UNet_AttentionBlock(8, 80)),
-
-            SwitchSequential(UNet_ResidualBlock(640, 640), UNet_AttentionBlock(8, 80)),
-
-            # (Batch_size, 640, Height / 16, Width / 16) -> (Batch_size, 640, Height / 32, Width / 32)
-            # Reduce the spatial dimensions
-            SwitchSequential(nn.Conv2d(640, 640, kernel_size=3, stride=2, padding=1)),
-
-            # Increase the number of channels
-            SwitchSequential(UNet_ResidualBlock(640, 1280), UNet_AttentionBlock(8, 160)),
-
-            SwitchSequential(UNet_ResidualBlock(1280, 1280), UNet_AttentionBlock(8, 160)),
-
-            # (Batch_size, 1280, Height / 32, Width / 32) -> (Batch_size, 1280, Height / 64, Width / 64)
-            # Reduce the spatial dimensions
-            SwitchSequential(nn.Conv2d(1280, 1280, kernel_size=3, stride=2, padding=1)),
-
-            SwitchSequential(UNet_ResidualBlock(1280, 1280)),
-
-            SwitchSequential(UNet_ResidualBlock(1280, 1280)),
-        ])
+        self.encoders = nn.ModuleList(
+            [
+                # (Batch_size, 4, Height / 8, Width / 8) -> (Batch_size, 320, Height / 8, Width / 8)
+                # Increase the number of channels
+                SwitchSequential(nn.Conv2d(4, 320, kernel_size=3, padding=1)),
+                SwitchSequential(UNet_ResidualBlock(320, 320), UNet_AttentionBlock(8, 40)),
+                SwitchSequential(UNet_ResidualBlock(320, 320), UNet_AttentionBlock(8, 40)),
+                # (Batch_size, 320, Height / 8, Width / 8) -> (Batch_size, 320, Height / 16, Width / 16)
+                # Reduce the spatial dimensions
+                SwitchSequential(nn.Conv2d(320, 320, kernel_size=3, stride=2, padding=1)),
+                # Increase the number of channels
+                SwitchSequential(UNet_ResidualBlock(320, 640), UNet_AttentionBlock(8, 80)),
+                SwitchSequential(UNet_ResidualBlock(640, 640), UNet_AttentionBlock(8, 80)),
+                # (Batch_size, 640, Height / 16, Width / 16) -> (Batch_size, 640, Height / 32, Width / 32)
+                # Reduce the spatial dimensions
+                SwitchSequential(nn.Conv2d(640, 640, kernel_size=3, stride=2, padding=1)),
+                # Increase the number of channels
+                SwitchSequential(UNet_ResidualBlock(640, 1280), UNet_AttentionBlock(8, 160)),
+                SwitchSequential(UNet_ResidualBlock(1280, 1280), UNet_AttentionBlock(8, 160)),
+                # (Batch_size, 1280, Height / 32, Width / 32) -> (Batch_size, 1280, Height / 64, Width / 64)
+                # Reduce the spatial dimensions
+                SwitchSequential(nn.Conv2d(1280, 1280, kernel_size=3, stride=2, padding=1)),
+                SwitchSequential(UNet_ResidualBlock(1280, 1280)),
+                SwitchSequential(UNet_ResidualBlock(1280, 1280)),
+            ]
+        )
 
         self.bottleneck = SwitchSequential(
             UNet_ResidualBlock(1280, 1280),
-
             UNet_AttentionBlock(8, 160),
-
             UNet_ResidualBlock(1280, 1280),
         )
 
-        self.decoder = nn.ModuleList([
-            # The input channels are doubled because of the skip connections
-            # 2560 = 1280 + 1280, where 1280 is the number of channels from the skip connection of the encoder 
-            # (Batch_size, 2560, Height / 64, Width / 64) -> (Batch_size, 1280, Height / 64, Width / 64)
-            SwitchSequential(UNet_ResidualBlock(2560, 1280)),
+        self.decoders = nn.ModuleList(
+            [
+                # The input channels are doubled because of the skip connections
+                # 2560 = 1280 + 1280, where 1280 is the number of channels from the skip connection of the encoder
+                # (Batch_size, 2560, Height / 64, Width / 64) -> (Batch_size, 1280, Height / 64, Width / 64)
+                SwitchSequential(UNet_ResidualBlock(2560, 1280)),
+                SwitchSequential(UNet_ResidualBlock(2560, 1280)),
+                # (Batch_size, 2560, Height / 64, Width / 64) -> (Batch_size, 1280, Height / 32, Width / 32)
+                SwitchSequential(UNet_ResidualBlock(2560, 1280), UpSample(1280)),
+                SwitchSequential(UNet_ResidualBlock(2560, 1280), UNet_AttentionBlock(8, 160)),
+                SwitchSequential(UNet_ResidualBlock(2560, 1280), UNet_AttentionBlock(8, 160)),
+                # (Batch_size, 1920, Height / 32, Width / 32) -> (Batch_size, 1280, Height / 16, Width / 16)
+                # 1920 = 1280 + 640, where 640 is the number of channels from the skip connection of the encoder
+                SwitchSequential(
+                    UNet_ResidualBlock(1920, 1280),
+                    UNet_AttentionBlock(8, 160),
+                    UpSample(1280),
+                ),
+                SwitchSequential(UNet_ResidualBlock(1920, 640), UNet_AttentionBlock(8, 80)),
+                # 1280 = 640 + 640, where 640 is the number of channels from the skip connection of the encoder
+                SwitchSequential(UNet_ResidualBlock(1280, 640), UNet_AttentionBlock(8, 80)),
+                # (Batch_size, 960, Height / 16, Width / 16) -> (Batch_size, 640, Height / 8, Width / 8)
+                # 960 = 640 + 320, where 320 is the number of channels from the skip connection of the encoder
+                SwitchSequential(
+                    UNet_ResidualBlock(960, 640),
+                    UNet_AttentionBlock(8, 80),
+                    UpSample(640),
+                ),
+                SwitchSequential(UNet_ResidualBlock(960, 320), UNet_AttentionBlock(8, 40)),
+                # 640 = 320 + 320, where 320 is the number of channels from the skip connection of the encoder
+                SwitchSequential(UNet_ResidualBlock(640, 320), UNet_AttentionBlock(8, 40)),
+                SwitchSequential(UNet_ResidualBlock(640, 320), UNet_AttentionBlock(8, 40)),
+            ]
+        )
 
-            SwitchSequential(UNet_ResidualBlock(2560, 1280)),
+    def forward(self, x, context, time):
+        # x: (Batch_Size, 4, Height / 8, Width / 8)
+        # context: (Batch_Size, Seq_Len, Dim)
+        # time: (1, 1280)
 
-            # (Batch_size, 2560, Height / 64, Width / 64) -> (Batch_size, 1280, Height / 32, Width / 32)
-            SwitchSequential(UNet_ResidualBlock(2560, 1280), UpSample(1280)),
+        skip_connections = []
+        for layers in self.encoders:
+            x = layers(x, context, time)
+            skip_connections.append(x)
 
-            SwitchSequential(UNet_ResidualBlock(2560, 1280), UNet_AttentionBlock(8, 160)),
+        x = self.bottleneck(x, context, time)
 
-            SwitchSequential(UNet_ResidualBlock(2560, 1280), UNet_AttentionBlock(8, 160)),
+        for layers in self.decoders:
+            # Since we always concat with the skip connection of the encoder,
+            #  the number of features increases before being sent to the decoder's layer
+            x = torch.cat((x, skip_connections.pop()), dim=1)
+            x = layers(x, context, time)
 
-            # (Batch_size, 1920, Height / 32, Width / 32) -> (Batch_size, 1280, Height / 16, Width / 16)
-            # 1920 = 1280 + 640, where 640 is the number of channels from the skip connection of the encoder
-            SwitchSequential(UNet_ResidualBlock(1920, 1280), UNet_AttentionBlock(8, 160), UpSample(1280)),
+        return x
 
-            SwitchSequential(UNet_ResidualBlock(1920, 640), UNet_AttentionBlock(8, 80)),
-
-            # 1280 = 640 + 640, where 640 is the number of channels from the skip connection of the encoder
-            SwitchSequential(UNet_ResidualBlock(1280, 640), UNet_AttentionBlock(8, 80)),
-
-            # (Batch_size, 960, Height / 16, Width / 16) -> (Batch_size, 640, Height / 8, Width / 8)
-            # 960 = 640 + 320, where 320 is the number of channels from the skip connection of the encoder
-            SwitchSequential(UNet_ResidualBlock(960, 640), UNet_AttentionBlock(8, 80), UpSample(640)),
-
-            SwitchSequential(UNet_ResidualBlock(960, 320), UNet_AttentionBlock(8, 40)),
-
-            # 640 = 320 + 320, where 320 is the number of channels from the skip connection of the encoder
-            SwitchSequential(UNet_ResidualBlock(640, 320), UNet_AttentionBlock(8, 40)),
-
-            SwitchSequential(UNet_ResidualBlock(640, 320), UNet_AttentionBlock(8, 40)),
-        ])
-    
 
 class UNet_Outputlayer(nn.Module):
 
@@ -270,33 +278,34 @@ class UNet_Outputlayer(nn.Module):
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        '''
+        """
         Args:
             x: (Batch_size, 320, Height / 8, Width / 8)
-        '''
+        """
         x = self.groupnorm(x)
         x = F.silu(x)
         x = self.conv(x)
 
         # (Batch_size, 4, Height / 8, Width / 8)
-        return x    
+        return x
 
 
 class Diffusion(nn.Module):
 
     def __init__(self):
+        super().__init__()
         self.time_embedding = TimeEmbedding(320)
         self.unet = UNet()
         self.final = UNet_Outputlayer(320, 4)
 
     def forward(self, latent: torch.Tensor, context: torch.Tensor, time: torch.Tensor) -> torch.Tensor:
-        '''
+        """
         Args:
             latent: (Batch_size, 4, Height / 8, Width / 8),
             context: (Batch_size, Seq_length, Dim=768)
             time: (1, 320)
-        
-        '''
+
+        """
         # Similar to a positional encoding of a transformer language model
         # (1, 320) -> (1, 1280)
         time = self.time_embedding(time)
@@ -309,5 +318,3 @@ class Diffusion(nn.Module):
 
         # (Batch_size, 4, Height / 8, Width / 8)
         return output
-    
-

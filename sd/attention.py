@@ -8,13 +8,13 @@ from torch.nn import functional as F
 class SelfAttention(nn.Module):
 
     def __init__(self, n_heads: int, d_embed: int, in_proj_bias=True, out_proj_bias=True):
-        '''
+        """
         Args:
             n_heads: Number of heads
             d_embed: Embedding dimension (number of channels a token/pixel is encoded into)
             in_proj_bias: Whether to include bias in the linear transformation
             out_proj_bias: Whether to include bias in the linear transformation
-        '''
+        """
         super().__init__()
 
         self.in_proj = nn.Linear(d_embed, 3 * d_embed, bias=in_proj_bias)
@@ -23,21 +23,21 @@ class SelfAttention(nn.Module):
         self.d_head = d_embed // n_heads
 
     def forward(self, x: torch.Tensor, causal_mask=False) -> torch.Tensor:
-        '''
+        """
         Args:
             x: latent: (Batch_size, Seq_length, Dim)
             causal_mask: Whether to apply a mask to the attention matrix
-            
+
             Returns: (Batch_size, Seq_length, Dim) - dynamic weighted average (with attention weights) of the
             input sequence embeddings, i.e. the self-attention mechanism output applied to each token/pixel in the input
-        '''
-        
+        """
+
         input_shape = x.shape
         batch_size, seq_length, _ = input_shape
 
         interim_shape = (batch_size, seq_length, self.n_heads, self.d_head)
 
-        # (Batch_size, Seq_length, Dim) -> (Batch_size, Seq_length, 3 * Dim) -> 
+        # (Batch_size, Seq_length, Dim) -> (Batch_size, Seq_length, 3 * Dim) ->
         # -> 3 tensors of shape (Batch_size, Seq_length, Dim)
         q, k, v = self.in_proj(x).chunk(3, dim=-1)
 
@@ -75,22 +75,29 @@ class SelfAttention(nn.Module):
         output = output.reshape(input_shape)
 
         # (Batch_size, Seq_length, Dim) -> (Batch_size, Seq_length, Dim)
-        output = self.out_proj(output, bias=self.out_proj)
+        output = self.out_proj(output)
 
         return output
-    
+
 
 class CrossAttention(nn.Module):
 
-    def __init__(self, n_heads: int, d_embed: int, d_cross: int, in_proj_bias=True, out_proj_bias=True):
-        '''
+    def __init__(
+        self,
+        n_heads: int,
+        d_embed: int,
+        d_cross: int,
+        in_proj_bias=True,
+        out_proj_bias=True,
+    ):
+        """
         Args:
             n_heads: Number of heads
             d_embed: Embedding dimension (number of channels a pixel is encoded into)
             d_cross: Dimension of the context (number of channels a token is encoded into)
             in_proj_bias: Whether to include bias in the linear transformation
             out_proj_bias: Whether to include bias in the linear transformation
-        '''
+        """
         super().__init__()
         self.q_proj = nn.Linear(d_embed, d_embed, bias=in_proj_bias)
         self.k_proj = nn.Linear(d_cross, d_embed, bias=in_proj_bias)
@@ -100,11 +107,11 @@ class CrossAttention(nn.Module):
         self.d_head = d_embed // n_heads
 
     def forward(self, x: torch.Tensor, y: torch.Tensor):
-        '''
+        """
         Args:
             x: latent: (Batch_size, Seq_len_Q, Dim_Q)
             y: context: (Batch_size, Seq_len_KV, Dim_KV) = (Batch_size, 77, 768)
-        '''
+        """
 
         input_shape = x.shape
         batch_size, _, _ = input_shape
@@ -138,7 +145,5 @@ class CrossAttention(nn.Module):
         output = output.reshape(input_shape)
 
         output = self.out_proj(output)
-        
+
         return output
-
-
